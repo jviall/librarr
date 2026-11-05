@@ -168,6 +168,16 @@ type Config struct {
 	OIDCDefaultRole          string
 	OIDCRequireEmailVerified bool
 	OIDCProxyHeaders         bool
+	// LocalAuthDisabled turns off password sign-in for everyone but local
+	// admins once the OIDC provider is up. Admins sign in at /login?local=1.
+	LocalAuthDisabled bool
+	// OIDCLogoutURL, when set, is where SSO users are sent on sign-out
+	// instead of the provider's end_session_endpoint. Proxy-header setups
+	// need it to end the proxy's session (e.g. Authentik's outpost sign_out).
+	OIDCLogoutURL string
+	// OIDCPostLogoutRedirectURI is sent to the provider's end_session_endpoint
+	// as post_logout_redirect_uri. It must be registered with the provider.
+	OIDCPostLogoutRedirectURI string
 
 	// Deluge
 	DelugeURL      string
@@ -423,6 +433,10 @@ func buildFromEnv() *Config {
 		OIDCDefaultRole:          getEnv("OIDC_DEFAULT_ROLE", "user"),
 		OIDCRequireEmailVerified: getEnvBool("OIDC_REQUIRE_EMAIL_VERIFIED", true),
 		OIDCProxyHeaders:         getEnvBool("OIDC_PROXY_HEADERS_ENABLED", false),
+		LocalAuthDisabled:        getEnvBool("LOCAL_AUTH_DISABLED", false),
+
+		OIDCLogoutURL:             getEnv("OIDC_LOGOUT_URL", ""),
+		OIDCPostLogoutRedirectURI: getEnv("OIDC_POST_LOGOUT_REDIRECT_URI", ""),
 
 		DelugeURL:      getEnv("DELUGE_URL", ""),
 		DelugePassword: getEnv("DELUGE_PASSWORD", ""),

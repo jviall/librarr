@@ -7,6 +7,8 @@ export interface AuthStatus {
   has_users: boolean;
   oidc_enabled: boolean;
   oidc_provider_name?: string;
+  // false when LOCAL_AUTH_DISABLED sends sign-in to SSO (admins: ?local=1).
+  local_login_enabled?: boolean;
   username?: string;
   role?: Role;
 }
