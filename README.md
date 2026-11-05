@@ -233,6 +233,7 @@ behind TLS.
 | `OIDC_AUTO_CREATE_USERS` | `true` | Auto-create users on first OIDC login |
 | `OIDC_DEFAULT_ROLE` | `user` | Default role for OIDC-created users |
 | `OIDC_PROXY_HEADERS_ENABLED` | `false` | Trust Authentik identity headers from a reverse proxy |
+| `LOCAL_AUTH_DISABLED` | `false` | Send everyone to SSO; only local admins sign in with a password, at `/login?local=1` |
 | `LIBRARR_TRUSTED_PROXIES` | | Comma-separated IPs/CIDRs of your reverse proxy. **Required for `OIDC_PROXY_HEADERS_ENABLED`**; also gates `X-Forwarded-Proto` |
 
 When `OIDC_PROXY_HEADERS_ENABLED=true` and Librarr sits behind a trusted reverse
@@ -257,6 +258,15 @@ sessions end. Local admin accounts are never converted, and SSO stays disabled
 until at least one local admin exists. On a fresh install, register the admin
 account first. The last local admin cannot be demoted or deleted, so the
 instance stays reachable when the identity provider is down.
+
+**SSO-only sign-in.** With `LOCAL_AUTH_DISABLED=true` the login page goes
+straight to the identity provider. Password sign-in and registration are
+refused for everyone except local admins, who sign in at `/login?local=1`. The
+first-run admin account can still be registered. If the provider fails to
+initialise at startup, local sign-in stays enabled so you are not locked out.
+After signing out, the login page waits for a click instead of redirecting,
+because the provider's session would sign you straight back in. Signing out of
+Librarr does not end that provider session.
 
 ### Download Clients
 
