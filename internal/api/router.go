@@ -128,6 +128,7 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 			return defaultCoverSearchURL
 		},
 		CoverBaseURL: coverBaseURL,
+		Contact:      cfg.OpenLibraryContact,
 	})
 	coverStore := covers.NewStore(
 		filepath.Join(filepath.Dir(database.GetDBPath()), "covers"),
