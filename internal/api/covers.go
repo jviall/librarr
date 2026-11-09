@@ -1,7 +1,6 @@
 package api
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -10,7 +9,6 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/JeremiahM37/librarr/internal/metadata"
 )
@@ -114,22 +112,4 @@ func (s *Server) handleLibraryCover(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	io.Copy(w, f)
-}
-
-const coverLookupMaxAge = 30 * 24 * time.Hour
-
-// pruneCoverLookups drops month-old cached lookups once a day until ctx ends.
-func (s *Server) pruneCoverLookups(ctx context.Context) {
-	ticker := time.NewTicker(24 * time.Hour)
-	defer ticker.Stop()
-	for {
-		if err := s.db.PruneCoverLookups(time.Now().Add(-coverLookupMaxAge)); err != nil {
-			slog.Warn("prune cover lookups failed", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
 }

@@ -55,7 +55,7 @@ func coverTestServer(t *testing.T, maxConcurrent int, handler http.HandlerFunc) 
 		CoverBaseURL:  func() string { return "https://covers.test" },
 		MaxConcurrent: maxConcurrent,
 	})
-	s.coverStore = covers.NewStore(filepath.Join(t.TempDir(), "covers"))
+	s.coverStore = covers.NewStore(filepath.Join(t.TempDir(), "covers"), nil, func() string { return "https://covers.test" })
 	return s, &hits
 }
 
@@ -185,32 +185,7 @@ func TestCoverLookupStopsOnDisconnect(t *testing.T) {
 	}
 }
 
-func TestCoverLookupRequiresAuth(t *testing.T) {
-	s, _ := coverTestServer(t, 3, olStub)
-	s.cfg = &config.Config{APIKey: "k-123"}
-	s.sessions = NewSessionStore()
-	s.mux = http.NewServeMux()
-	s.registerLibraryRoutes()
-	h := s.Handler()
-
-	do := func(method, path, body string, key bool) int {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		if key {
-			req.Header.Set("X-Api-Key", "k-123")
-		}
-		rr := httptest.NewRecorder()
-		h.ServeHTTP(rr, req)
-		return rr.Code
-	}
-	if code := do("POST", "/api/covers/lookup", `{"items":[]}`, false); code != 401 {
-		t.Errorf("without key = %d, want 401", code)
-	}
-	if code := do("POST", "/api/covers/lookup", `{"items":[]}`, true); code != 200 {
-		t.Errorf("with key = %d, want 200", code)
-	}
-}
-
-func TestLibraryCoverRequiresAuth(t *testing.T) {
+func TestCoverEndpointsRequireAuth(t *testing.T) {
 	s, _ := coverTestServer(t, 3, olStub)
 	s.cfg = &config.Config{APIKey: "k-123"}
 	s.sessions = NewSessionStore()
@@ -236,11 +211,16 @@ func TestLibraryCoverRequiresAuth(t *testing.T) {
 		h.ServeHTTP(rr, req)
 		return rr.Code
 	}
-	if code := do("GET", "/api/library/1/cover", "", false); code != 401 {
-		t.Errorf("without key = %d, want 401", code)
-	}
-	if code := do("GET", "/api/library/1/cover", "", true); code != 200 {
-		t.Errorf("with key = %d, want 200", code)
+	for _, c := range [][3]string{
+		{"POST", "/api/covers/lookup", `{"items":[]}`},
+		{"GET", "/api/library/1/cover", ""},
+	} {
+		if code := do(c[0], c[1], c[2], false); code != 401 {
+			t.Errorf("%s %s without key = %d, want 401", c[0], c[1], code)
+		}
+		if code := do(c[0], c[1], c[2], true); code != 200 {
+			t.Errorf("%s %s with key = %d, want 200", c[0], c[1], code)
+		}
 	}
 }
 
@@ -338,33 +318,5 @@ func TestOpenAPIDocumentsCoverEndpoints(t *testing.T) {
 	}
 	if spec.Paths["/api/library/{id}/cover"]["get"] == nil {
 		t.Error("missing GET /api/library/{id}/cover")
-	}
-}
-
-func TestPruneCoverLookupsDropsOldEntries(t *testing.T) {
-	s, _ := coverTestServer(t, 3, olStub)
-	if err := s.db.PutCoverLookup("old", "u", time.Now().Add(-31*24*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.db.PutCoverLookup("new", "u", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() { s.pruneCoverLookups(ctx); close(done) }()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if _, found, _, _ := s.db.GetCoverLookup("old"); !found {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("old entry not pruned")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	cancel()
-	<-done
-	if _, found, _, _ := s.db.GetCoverLookup("new"); !found {
-		t.Error("new entry pruned")
 	}
 }

@@ -2,6 +2,7 @@ package covers
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"regexp"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/JeremiahM37/librarr/internal/db"
+	"github.com/JeremiahM37/librarr/internal/metadata"
 	"github.com/JeremiahM37/librarr/internal/models"
 	"github.com/JeremiahM37/librarr/internal/organize"
 )
@@ -16,6 +18,7 @@ import (
 const (
 	jobBatchSize     = 25
 	jobRetryAfter    = 24 * time.Hour
+	jobLookupMaxAge  = 30 * 24 * time.Hour
 	jobItemDelay     = time.Second
 	jobStartDelay    = 30 * time.Second
 	jobCheckInterval = 5 * time.Minute
@@ -24,22 +27,29 @@ const (
 // coverFileName matches the names Store.Save produces.
 var coverFileName = regexp.MustCompile(`^[0-9]+\.(jpg|png|gif|webp)$`)
 
-// Job gives local library items a saved cover: the one embedded in the book,
-// for EPUBs. Items without one stay on the placeholder and are checked again
-// after a day.
+// Resolver finds a cover image URL for a book.
+type Resolver interface {
+	Resolve(ctx context.Context, kind metadata.CoverKind, title, author string) (string, error)
+}
+
+// Job gives local library items a saved cover: the one embedded in the book
+// when there is one, otherwise a cover found through a lookup. Failures leave
+// the item on the placeholder and are retried after a day.
 type Job struct {
 	db         *db.DB
 	store      *Store
+	resolver   Resolver
 	mediaTypes func() []string
 	delay      time.Duration
 	now        func() time.Time
 }
 
 // NewJob returns a Job. mediaTypes is read on every pass.
-func NewJob(database *db.DB, store *Store, mediaTypes func() []string) *Job {
+func NewJob(database *db.DB, store *Store, resolver Resolver, mediaTypes func() []string) *Job {
 	return &Job{
 		db:         database,
 		store:      store,
+		resolver:   resolver,
 		mediaTypes: mediaTypes,
 		delay:      jobItemDelay,
 		now:        time.Now,
@@ -132,10 +142,15 @@ func (j *Job) regenerateMissing() {
 	}
 }
 
-// process finds and saves one item's cover. It returns false when the database
+// process finds and saves one item's cover. It returns false when lookups are
+// cooling down, which leaves the item for the next pass, or when the database
 // can't record the outcome, so the caller stops instead of looping.
 func (j *Job) process(ctx context.Context, item *models.LibraryItem) bool {
-	file := j.fetch(item)
+	file, err := j.fetch(ctx, item)
+	if errors.Is(err, metadata.ErrCoverCoolingDown) {
+		slog.Debug("cover job: lookups cooling down, stopping this pass", "id", item.ID, "error", err)
+		return false
+	}
 	if file == "" && ctx.Err() != nil {
 		return true // cancelled: leave the item unmarked
 	}
@@ -146,30 +161,49 @@ func (j *Job) process(ctx context.Context, item *models.LibraryItem) bool {
 	return true
 }
 
-// fetch returns the saved cover file name, or "" when none could be found.
-func (j *Job) fetch(item *models.LibraryItem) string {
-	if !strings.EqualFold(filepath.Ext(item.FilePath), ".epub") {
-		return ""
+// fetch returns the saved cover file name, or "" when none could be found. The
+// only error is metadata.ErrCoverCoolingDown, when the item has not been judged.
+func (j *Job) fetch(ctx context.Context, item *models.LibraryItem) (string, error) {
+	var image []byte
+	if strings.EqualFold(filepath.Ext(item.FilePath), ".epub") {
+		b, err := organize.ExtractEPUBCover(item.FilePath, MaxImageBytes)
+		if err != nil {
+			slog.Debug("cover job: no embedded cover", "id", item.ID, "error", err)
+		} else if _, _, ok := DetectImage(b); ok {
+			image = b
+		} else {
+			slog.Debug("cover job: embedded cover is not an image", "id", item.ID)
+		}
 	}
-	image, err := organize.ExtractEPUBCover(item.FilePath, MaxImageBytes)
-	if err != nil {
-		slog.Debug("cover job: no embedded cover", "id", item.ID, "error", err)
-		return ""
-	}
-	if _, _, ok := DetectImage(image); !ok {
-		slog.Debug("cover job: embedded cover is not an image", "id", item.ID)
-		return ""
+	if image == nil {
+		coverURL, err := j.resolver.Resolve(ctx, metadata.CoverKindBook, item.Title, item.Author)
+		if errors.Is(err, metadata.ErrCoverCoolingDown) {
+			return "", err
+		}
+		if err != nil {
+			slog.Debug("cover job: lookup failed", "id", item.ID, "error", err)
+			return "", nil
+		}
+		if coverURL == "" {
+			slog.Debug("cover job: no cover found", "id", item.ID)
+			return "", nil
+		}
+		image, err = j.store.Download(ctx, coverURL)
+		if err != nil {
+			slog.Debug("cover job: download failed", "id", item.ID, "error", err)
+			return "", nil
+		}
 	}
 	file, err := j.store.Save(item.ID, image)
 	if err != nil {
 		slog.Warn("cover job: save failed", "id", item.ID, "error", err)
-		return ""
+		return "", nil
 	}
-	return file
+	return file, nil
 }
 
-// sweep removes cover files no item references. If the directory can't be
-// listed it removes nothing.
+// sweep removes cover files no item references and old cached lookups. If the
+// directory can't be listed it removes nothing.
 func (j *Job) sweep() {
 	files, err := j.db.CoverFiles()
 	if err != nil {
@@ -192,6 +226,9 @@ func (j *Job) sweep() {
 		if err := j.store.Remove(name); err != nil {
 			slog.Warn("cover job: remove orphan failed", "file", name, "error", err)
 		}
+	}
+	if err := j.db.PruneCoverLookups(j.now().Add(-jobLookupMaxAge)); err != nil {
+		slog.Warn("cover job: prune lookups failed", "error", err)
 	}
 }
 
