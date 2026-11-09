@@ -334,6 +334,9 @@ func (d *DB) migrate() error {
 		`ALTER TABLE quality_profiles ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0`,
 		// Author monitoring can add new works to the wanted list.
 		`ALTER TABLE monitored_authors ADD COLUMN auto_add INTEGER NOT NULL DEFAULT 1`,
+		// Cover image file name (empty when none) and when we last looked.
+		`ALTER TABLE library_items ADD COLUMN cover_file TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE library_items ADD COLUMN cover_checked_at REAL NOT NULL DEFAULT 0`,
 	}
 	for _, stmt := range addColumns {
 		if _, err := d.db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
@@ -357,6 +360,8 @@ func (d *DB) migrate() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_wishlist_active_job ON wishlist(active_job_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wishlist_library_item ON wishlist(library_item_id)`,
+		// Cached cover searches; an empty url records a miss.
+		`CREATE TABLE IF NOT EXISTS cover_lookups (key TEXT PRIMARY KEY, url TEXT NOT NULL DEFAULT '', fetched_at REAL NOT NULL)`,
 	}
 	for _, m := range postMigrations {
 		if _, err := d.db.Exec(m); err != nil {

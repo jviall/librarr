@@ -40,6 +40,11 @@ export interface SearchResult {
   leechers?: number;
   indexer?: string;
 }
+export interface CoverLookup {
+  title: string;
+  author: string;
+  media_type: MediaType;
+}
 export interface WishlistItem {
   id: number;
   title: string;
@@ -160,6 +165,15 @@ export function setUnauthorizedHandler(
 ): void {
   onUnauthorized = handler;
 }
+// Images cannot send headers, so API paths carry the saved key in the URL.
+export function assetUrl(path: string): string {
+  if (!path.startsWith("/api/")) return path;
+  const apiKey = localStorage.getItem("librarr_apikey");
+  if (!apiKey) return path;
+  const url = new URL(path, window.location.origin);
+  url.searchParams.set("apikey", apiKey);
+  return url.pathname + url.search;
+}
 export async function request(
   path: string,
   init: RequestInit = {},
@@ -192,6 +206,18 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(response.status, message);
   }
   return body as T;
+}
+
+export async function lookupCover(
+  item: CoverLookup,
+  signal: AbortSignal,
+): Promise<string> {
+  const data = await api<{ cover_url?: string }>("/api/covers/lookup", {
+    method: "POST",
+    body: JSON.stringify(item),
+    signal,
+  });
+  return data.cover_url || "";
 }
 
 // /auth/status is intentionally public and skips API-key middleware. Validate a

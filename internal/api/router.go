@@ -8,10 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/JeremiahM37/librarr/internal/config"
+	"github.com/JeremiahM37/librarr/internal/covers"
 	"github.com/JeremiahM37/librarr/internal/db"
 	"github.com/JeremiahM37/librarr/internal/download"
 	"github.com/JeremiahM37/librarr/internal/metadata"
@@ -49,6 +51,9 @@ type Server struct {
 	wishlistClean  *scheduler.WishlistCleaner
 	seriesDetector *scheduler.SeriesDetector
 	authorMonitor  *scheduler.AuthorMonitor
+	coverJob       *covers.Job
+	coverResolver  *metadata.CoverResolver
+	coverStore     *covers.Store
 }
 
 // NewServer creates the HTTP API server.
@@ -107,6 +112,30 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 	authorMon := scheduler.NewAuthorMonitor(cfg, database, ws)
 	authorMon.SetOpenLibraryURL(cfg.OpenLibraryURL)
 
+	coverBaseURL := func() string {
+		if cfg.Sources != nil && cfg.Sources.OpenLibrary.CoverURL != "" {
+			return cfg.Sources.OpenLibrary.CoverURL
+		}
+		return defaultCoverBaseURL
+	}
+	coverResolver := metadata.NewCoverResolver(metadata.CoverResolverOptions{
+		Cache:      database,
+		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		SearchURL: func() string {
+			if cfg.Sources != nil && cfg.Sources.OpenLibrary.SearchURL != "" {
+				return cfg.Sources.OpenLibrary.SearchURL
+			}
+			return defaultCoverSearchURL
+		},
+		CoverBaseURL: coverBaseURL,
+		Contact:      cfg.OpenLibraryContact,
+	})
+	coverStore := covers.NewStore(
+		filepath.Join(filepath.Dir(database.GetDBPath()), "covers"),
+		&http.Client{Timeout: 30 * time.Second},
+		coverBaseURL,
+	)
+
 	s := &Server{
 		cfg:            cfg,
 		db:             database,
@@ -127,6 +156,9 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 		wishlistClean:  wishlistClean,
 		seriesDetector: seriesDet,
 		authorMonitor:  authorMon,
+		coverResolver:  coverResolver,
+		coverStore:     coverStore,
+		coverJob:       covers.NewJob(database, coverStore, coverResolver, func() []string { return coverMediaTypes(cfg) }),
 	}
 
 	// Initialize OIDC handler if configured.
@@ -147,6 +179,26 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 	return s
 }
 
+const (
+	defaultCoverSearchURL = "https://openlibrary.org/search.json"
+	defaultCoverBaseURL   = "https://covers.openlibrary.org"
+)
+
+// coverMediaTypes lists the media types served from the local library, which
+// are the ones the cover job fills. It mirrors the routing in handleLibrary
+// and handleLibraryAudiobooks; manga is not looked up.
+func coverMediaTypes(cfg *config.Config) []string {
+	types := []string{}
+	absEbooks := cfg.HasAudiobookshelf() && cfg.ABSEbookLibraryID != ""
+	if !absEbooks {
+		types = append(types, "ebook")
+	}
+	if !cfg.HasAudiobookshelf() {
+		types = append(types, "audiobook")
+	}
+	return types
+}
+
 // StartScheduler starts the background scheduler loop.
 func (s *Server) StartScheduler(ctx context.Context) {
 	// Start author monitor in a separate goroutine.
@@ -155,6 +207,9 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	}
 	if s.wishlistClean != nil && s.cfg.WishlistCleanupEnabled {
 		go s.wishlistClean.Start(ctx)
+	}
+	if s.coverJob != nil {
+		go s.coverJob.Start(ctx)
 	}
 	// Scheduler.Start blocks until ctx is cancelled.
 	if s.scheduler != nil {
@@ -317,6 +372,8 @@ func (s *Server) registerLibraryRoutes() {
 	s.mux.HandleFunc("DELETE /api/library/book/{id}", s.handleDeleteBook)
 	s.mux.HandleFunc("DELETE /api/library/audiobook/{id}", s.handleDeleteAudiobook)
 	s.mux.HandleFunc("DELETE /api/library/manga/{id}", s.handleDeleteManga)
+	s.mux.HandleFunc("GET /api/library/{id}/cover", s.handleLibraryCover)
+	s.mux.HandleFunc("POST /api/covers/lookup", s.handleCoverLookup)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/activity", s.handleActivity)
 

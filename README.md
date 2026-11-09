@@ -133,6 +133,8 @@ Without Audiobookshelf or Kavita configured, the library tabs show locally impor
 - **Series grouping** -- groups related books/volumes in the library view
 - **EPUB verification** -- checks title word overlap to detect wrong-book downloads
 
+Local items get covers from their EPUB or, failing that, from Open Library. Covers are stored in `covers/` beside the database. With API-key login, the key appears in library cover image URLs, so it can show up in reverse-proxy logs.
+
 ### Notifications and Webhooks
 
 - **In-app notifications** -- persistent alerts for downloads, requests, failures, and author releases
@@ -466,6 +468,7 @@ Legacy per-source env vars (e.g. `PROWLARR_URL` and other per-driver overrides) 
 | `AUTHOR_CHECK_INTERVAL_DAYS` | `7` | Default check interval for newly followed authors |
 | `AUTHOR_MONITOR_AUTO_ADD` | `true` | Put newly found works on the wanted list (otherwise only notify) |
 | `OPENLIBRARY_URL` | `https://openlibrary.org` | Open Library origin used by the author monitor |
+| `OPENLIBRARY_CONTACT` | (empty) | Email or phone number added to the User-Agent of cover lookups. Open Library then allows 3 searches a second instead of 1 |
 
 ### Wanted List & Quality Profiles
 
