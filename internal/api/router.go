@@ -52,6 +52,7 @@ type Server struct {
 	seriesDetector *scheduler.SeriesDetector
 	authorMonitor  *scheduler.AuthorMonitor
 	coverJob       *covers.Job
+	coverResolver  *metadata.CoverResolver
 	coverStore     *covers.Store
 }
 
@@ -111,6 +112,22 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 	authorMon := scheduler.NewAuthorMonitor(cfg, database, ws)
 	authorMon.SetOpenLibraryURL(cfg.OpenLibraryURL)
 
+	coverResolver := metadata.NewCoverResolver(metadata.CoverResolverOptions{
+		Cache:      database,
+		HTTPClient: &http.Client{Timeout: 15 * time.Second},
+		SearchURL: func() string {
+			if cfg.Sources != nil && cfg.Sources.OpenLibrary.SearchURL != "" {
+				return cfg.Sources.OpenLibrary.SearchURL
+			}
+			return defaultCoverSearchURL
+		},
+		CoverBaseURL: func() string {
+			if cfg.Sources != nil && cfg.Sources.OpenLibrary.CoverURL != "" {
+				return cfg.Sources.OpenLibrary.CoverURL
+			}
+			return defaultCoverBaseURL
+		},
+	})
 	coverStore := covers.NewStore(filepath.Join(filepath.Dir(database.GetDBPath()), "covers"))
 
 	s := &Server{
@@ -133,6 +150,7 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 		wishlistClean:  wishlistClean,
 		seriesDetector: seriesDet,
 		authorMonitor:  authorMon,
+		coverResolver:  coverResolver,
 		coverStore:     coverStore,
 		coverJob:       covers.NewJob(database, coverStore, func() []string { return coverMediaTypes(cfg) }),
 	}
@@ -154,6 +172,11 @@ func NewServer(cfg *config.Config, database *db.DB, searchMgr *search.Manager, d
 	s.registerRoutes()
 	return s
 }
+
+const (
+	defaultCoverSearchURL = "https://openlibrary.org/search.json"
+	defaultCoverBaseURL   = "https://covers.openlibrary.org"
+)
 
 // coverMediaTypes lists the media types the cover job fills: local ebooks,
 // mirroring the routing in handleLibrary. Only EPUBs carry a cover to extract.
@@ -178,6 +201,7 @@ func (s *Server) StartScheduler(ctx context.Context) {
 	if s.coverJob != nil {
 		go s.coverJob.Start(ctx)
 	}
+	go s.pruneCoverLookups(ctx)
 	// Scheduler.Start blocks until ctx is cancelled.
 	if s.scheduler != nil {
 		s.scheduler.Start(ctx)
@@ -340,6 +364,7 @@ func (s *Server) registerLibraryRoutes() {
 	s.mux.HandleFunc("DELETE /api/library/audiobook/{id}", s.handleDeleteAudiobook)
 	s.mux.HandleFunc("DELETE /api/library/manga/{id}", s.handleDeleteManga)
 	s.mux.HandleFunc("GET /api/library/{id}/cover", s.handleLibraryCover)
+	s.mux.HandleFunc("POST /api/covers/lookup", s.handleCoverLookup)
 	s.mux.HandleFunc("GET /api/stats", s.handleStats)
 	s.mux.HandleFunc("GET /api/activity", s.handleActivity)
 
