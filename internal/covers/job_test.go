@@ -447,3 +447,44 @@ func TestJobSweepRemovesNothingWhenListFails(t *testing.T) {
 		}
 	}
 }
+
+// Only an image download pauses the pass. Embedded covers need no network, and
+// lookups are paced by the resolver.
+func TestJobPausesOnlyAfterDownloads(t *testing.T) {
+	e := newJobEnv(t)
+	e.job.delay = time.Hour
+	e.res.url = ""
+	var epubs []int64
+	for i := 0; i < 3; i++ {
+		p := filepath.Join(t.TempDir(), "b.epub")
+		writeEPUB(t, p, map[string][]byte{
+			"content.opf": []byte(`<package xmlns="http://www.idpf.org/2007/opf"><metadata><meta name="cover" content="c"/></metadata><manifest><item id="c" href="cover.img"/></manifest></package>`),
+			"cover.img":   pngBytes,
+			"path.txt":    []byte(p), // AddItem merges identical files
+		})
+		epubs = append(epubs, e.add(t, fmt.Sprintf("Embedded %d", i), "ebook", p))
+	}
+	for i := 0; i < 3; i++ {
+		e.add(t, fmt.Sprintf("Miss %d", i), "ebook", fmt.Sprintf("/x/%d.pdf", i))
+	}
+
+	done := make(chan struct{})
+	go func() { e.job.RunOnce(context.Background()); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pass paused without downloading anything")
+	}
+	for _, id := range epubs {
+		if e.cover(t, id) == "" {
+			t.Errorf("item %d has no cover", id)
+		}
+	}
+	if len(e.res.calls) != 3 {
+		t.Errorf("lookups = %d, want 3", len(e.res.calls))
+	}
+	items, _ := e.db.ItemsNeedingCover(e.types, e.now.Add(-24*time.Hour), 10)
+	if len(items) != 0 {
+		t.Errorf("%d items left unmarked", len(items))
+	}
+}
